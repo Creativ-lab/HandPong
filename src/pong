@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+##
+## CREATIVE LAB PROJECT, 2022
+## Yannis Defontaine
+## File description:
+## Pong game, play with your hands
+##
+
+import sys
+import pygame
+from random import randint
+import cv2
+import mediapipe as mp
+import numpy
+
+pop_sound = "data/pop_sound.mp3"
+game_music = "data/game_music.mp3"
+player_one_skin = 'data/skin/blue_racket.png'
+player_two_skin = 'data/skin/red_racket.png'
+ball_skin = 'data/skin/ball.png'
+map_skin = 'data/skin/map.png'
+font_path = 'data/font/arial.ttf'
+
+NB_ARG = 2
+ERROR = -1
+SUCCESS = 0
+
+#--------------------------GRAPHICS--------------------------------------------#
+
+Y = 1
+X = 0
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+BLUE = (0, 0, 255)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+
+FRAMES_PER_SECOND = 120
+CAMERA_HEIGHT = 480
+CAMERA_WIDTH = 640
+WINDOW_HEIGHT = 1000
+WINDOW_WIDTH = 1920
+ACCELERATION = 5
+
+
+class Player:
+    """
+        Player is a bar who move with your hand
+    """
+    def __init__(self, position: tuple = (10, 10), size: tuple = (25, 100), speed: int = 10, link_img: str = player_one_skin) -> None:
+        self.pos = {
+            'X': position[X],
+            'Y': position[Y]
+        }
+        self.size = {
+            'X': size[X],
+            'Y': size[Y]
+        }
+        self.speed = speed
+        self.skin = pygame.image.load(link_img)
+        self.score = 0
+
+    def draw(self, screen):
+        screen.blit(self.skin, (self.pos['X'], self.pos['Y']))
+
+    def move(self, bonus: int):
+        key = pygame.key.get_pressed()
+        if key[pygame.K_UP]:
+           self.pos['Y'] -= self.speed + bonus
+        if key[pygame.K_DOWN]:
+           self.pos['Y'] += self.speed + bonus
+
+    def update(self, screen, bonus: int = 0):
+        self.pos['Y'] *= WINDOW_WIDTH / CAMERA_WIDTH
+        self.pos['Y'] = min(self.pos['Y'], 2000)
+        self.draw(screen)
+
+
+class Ball:
+    """
+        Ball: Ball who will move with Player collision 
+    """
+    def __init__(self, position: tuple = (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2), circle_radius: int = 10, speed: int = 15) -> None:
+        self.pos = {
+            'X': position[X],
+            'Y': position[Y],
+            'spawn_X': position[X],
+            'spawn_Y': position[Y]
+        }
+        self.speed = {
+            'speed': speed,
+            'speed_start': speed
+        }
+        self.skin = pygame.image.load(ball_skin)
+
+        self.can_collid = True
+        self.radius = circle_radius
+        self.color = RED
+        self.axe = [-1.0, 1.0]
+        self.vector = {
+            'X': self.axe[randint(0, 1)],
+            'Y': self.axe[randint(0, 1)]
+        }
+
+    def draw(self, screen):
+        screen.blit(self.skin, (self.pos['X'], self.pos['Y']))
+
+    def move(self, bonus: int):
+        if self.vector['X'] == 1.0:
+            self.pos['X'] += self.speed['speed'] + bonus
+        if self.vector['X'] == -1.0:
+            self.pos['X'] -= self.speed['speed'] + bonus
+        self.pos['Y'] += self.vector['Y'] + bonus
+
+    def update(self, screen, bonus: int = 0):
+        if self.pos['Y'] <= 0 or self.pos['Y'] >= WINDOW_HEIGHT - self.radius:
+            self.vector['Y'] *= -1
+        if self.pos['X'] < 0 or self.pos['X'] > WINDOW_WIDTH:
+            self.vector['X'], self.vector['Y'] = self.axe[randint(0, 1)], self.axe[randint(0, 1)]
+            tmp_x = self.pos['X']
+            self.pos['X'], self.pos['Y'] = self.pos['spawn_X'], self.pos['spawn_Y']
+            self.speed['speed'] = self.speed['speed_start']
+            return 2 if tmp_x < 20 else 1
+        self.draw(screen)
+        self.move(bonus)
+        return 0
+
+
+def hit(sound, ball, player_one, player_two):
+    """ Function call if the Ball hit one player
+
+    Args:
+        sound: the sound that will be played if there is a collision
+        ball (Ball): Ball
+        player_one (Player): Player who maybe hit the ball
+        player_two (Player): Player who maybe hit the ball
+    """
+    player = player_two if ball.pos['X'] > WINDOW_WIDTH / 2 else player_one
+    sound.play()
+    ball.vector['X'] *= -1
+    ball.speed['speed'] += ACCELERATION
+    deviations = [-10, -5, 0, 5, 10]
+    offsets = [20, 40, 60, 80, 100]
+
+    for offset, deviation in zip(offsets, deviations):
+        if ball.pos['Y'] < player.pos['Y'] + offset:
+            ball.vector['Y'] = deviation
+            break
+
+
+def check_overlap(ball, player, player_two):
+    """ Detect if ball collide a Player
+
+    Args:
+        ball (Ball): ball
+        player (Player): Player who maybe hit the ball
+        player_two (Player): Player who maybe hit the ball
+
+    Returns:
+        bool: True if there is collision, otherwise False
+    """
+    if ball.pos['X'] > 200 and ball.pos['X'] < 900:
+        return False
+    if ball.pos['X'] > WINDOW_WIDTH / 2:
+        player = player_two
+    Xn = max(player.pos['X'], min(ball.pos['X'], player.pos['X'] + player.size['X']))
+    Yn = max(player.pos['Y'], min(ball.pos['Y'], player.pos['Y'] + player.size['Y']))
+    Dx = Xn - ball.pos['X']
+    Dy = Yn - ball.pos['Y']
+    return (Dx**2 + Dy**2) <= ball.radius**2
+
+#--------------------------HAND-DETECTION--------------------------------------#
+
+camera = cv2.VideoCapture(0) # 0 == webcam
+
+def blit_cam_frame(frame, screen):
+    screen.blit(frame,(WINDOW_WIDTH/2-CAMERA_WIDTH/2,0))
+    return screen
+
+
+def get_cam_frame(camera):
+    _, frame=camera.read()
+    frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+
+    Nframe = numpy.rot90(frame)
+    Nframe = pygame.surfarray.make_surface(Nframe)
+    return frame, Nframe
+
+
+class hand_detector:
+    def __init__(self, max_hands=2, detection_con=0.5, minTrack_con=0.5):
+        """
+            max_hands(int): Maximum number of hands to detect
+            detection_con(float): Minimum Detection Confidence Threshold
+            minTrack_con(float): Minimum Tracking Confidence Threshold
+        """
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=max_hands,
+            min_detection_confidence=detection_con,
+            min_tracking_confidence=minTrack_con
+        )
+
+    def find_hands(self, img, player_one, player_two):
+        img_RGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self.results = self.hands.process(img_RGB)
+        h, w, _ = img.shape
+
+        if self.results.multi_hand_landmarks:
+            for hand, handLms in zip(self.results.multi_handedness, self.results.multi_hand_landmarks):
+                limit_list = []
+                xList = []
+                yList = []
+                for _, lm in enumerate(handLms.landmark):
+                    px, py, pz = int(lm.x * w), int(lm.y * h), int(lm.z * w)
+                    limit_list.append([px, py, pz])
+                    xList.append(px)
+                    yList.append(py)
+
+                xmin, xmax = min(xList), max(xList)
+                ymin, ymax = min(yList), max(yList)
+                boxW, boxH = xmax - xmin, ymax - ymin
+                bbox = xmin, ymin, boxW, boxH
+
+                if hand.classification[0].label == 'Left':
+                    player_two.pos['Y'] = bbox[1]
+                if hand.classification[0].label == 'Right':
+                    player_one.pos['Y'] = bbox[1]
+
+
+def pong(fullscreen: bool) -> None:
+    screen_is_open = True
+    pygame.init()
+
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.FULLSCREEN if fullscreen else 0)
+
+    map_bg = pygame.image.load(map_skin)
+    font = pygame.font.SysFont(font_path, 52)
+    player_one = Player(position=(10, WINDOW_HEIGHT/2), link_img=player_one_skin)
+    player_two = Player(position=(WINDOW_WIDTH-25, WINDOW_HEIGHT/2), link_img=player_two_skin)
+    ball = Ball()
+
+    detector = hand_detector(detection_con=0.8, max_hands=2)
+    ret, frame = camera.read()
+    if not ret:
+        print(f'error: {ret}')
+        return ERROR
+    cv2.flip(frame, 1, frame) # mirror the image
+
+    pygame.mixer.init()
+    hit_sound = pygame.mixer.Sound(pop_sound)
+    hit_sound.set_volume(0.5)
+    pygame.mixer.music.load(game_music)
+    pygame.mixer.music.play()
+    pygame.mixer.music.set_volume(0.1)
+
+    while screen_is_open:
+        screen.fill(BLACK)
+        screen.blit(map_bg, (0,0))
+
+        frame, Nframe = get_cam_frame(camera)
+        screen = blit_cam_frame(Nframe, screen)
+        detector.find_hands(frame, player_one, player_two)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                screen_is_open = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    screen_is_open = False
+                if event.key == pygame.K_r:
+                    ball.vector = [ball.axe[randint(0, 1)], ball.axe[randint(0, 1)]]
+                    ball.pos['X'], ball.pos['Y'] = ball.pos['spawn_X'], ball.pos['spawn_Y']
+                    ball.speed['speed'] = ball.speed['speed_start']
+                    player_one.score = 0
+                    player_two.score = 0
+
+        player_one.update(screen)
+        player_two.update(screen)
+        winner = ball.update(screen)
+        if winner == 1:
+            player_one.score += 1
+        elif winner == 2:
+            player_two.score += 1
+    
+        if (check_overlap(ball, player_one, player_two)) and ball.can_collid:
+            hit(hit_sound, ball, player_one, player_two)
+
+        screen.blit(font.render(str(player_one.score), True, BLUE), (100, WINDOW_HEIGHT-100))
+        screen.blit(font.render(str(player_two.score), True, RED), (WINDOW_WIDTH-100, WINDOW_HEIGHT-100))
+
+        pygame.display.flip()
+        pygame.display.update()
+
+    pygame.quit()
+    cv2.destroyAllWindows()
+    camera.release()
+
+
+def description():
+    print()
+    print("USAGE")
+    print("\t./pong")
+    print("DESCRIPTION")
+    print("\tPong game, play with your hands")
+    print("\t-f if you want to fullscreen")
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > NB_ARG:
+        exit(ERROR)
+    if len(sys.argv) == 2:
+        if sys.argv[1] == "-h":
+            description()
+            exit(0)
+        pong(True if sys.argv[1] == "-f" else False)
+    pong(False)
